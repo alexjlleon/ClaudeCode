@@ -23,7 +23,7 @@ const corsOptions = {
   origin(origin, callback) {
     // Allow no-origin requests (curl, server-to-server) and any allow-listed origin.
     if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error('Not allowed by CORS'));
+    return callback(null, false);
   },
 };
 
@@ -33,6 +33,7 @@ app.get('/tracker.js', cors(), (req, res) => {
 });
 
 // --- Public: where the tracker posts events ---
+app.options('/api/track', cors(corsOptions));
 app.post('/api/track', cors(corsOptions), (req, res) => {
   const { label, event_type, session_id, page_url, referrer, meta } = req.body || {};
 
