@@ -1,4 +1,5 @@
 <!doctype html>
+
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -44,6 +45,30 @@
   header .sub{
     font-size:12.5px;
     color:var(--dim);
+  }
+  .tabs{
+    display:flex;
+    gap:4px;
+    padding:10px 20px 0;
+    background:var(--panel);
+    border-bottom:1px solid var(--line);
+  }
+  .tabs button{
+    font:inherit;
+    font-size:13.5px;
+    padding:8px 16px;
+    border:1px solid transparent;
+    border-bottom:none;
+    background:none;
+    color:var(--dim);
+    cursor:pointer;
+    border-radius:6px 6px 0 0;
+  }
+  .tabs button.active{
+    color:var(--ink);
+    background:var(--bg);
+    border-color:var(--line);
+    font-weight:600;
   }
   .controls{
     display:flex;
@@ -104,10 +129,26 @@
     border:none; background:none; color:inherit; cursor:pointer; font-family:inherit; font-size:inherit;
     text-decoration:underline; text-underline-offset:2px; padding:0;
   }
+  td.loc{ white-space:nowrap; color:var(--dim); font-size:12.5px; }
+  td.device{ white-space:nowrap; font-size:12.5px; }
+  td.ref{ font-size:12px; color:var(--dim); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   tr.type-milestone td{ background:var(--milestone); }
   tr.type-success   td{ background:var(--success); }
   tr.type-error     td{ background:var(--error); }
   tr.type-pageview  td.label{ color:var(--dim); }
+
+  /* Visitor (grouped) rows */
+  tr.visitor{ cursor:pointer; }
+  tr.visitor:hover td{ background:#f4f8f5; }
+  tr.visitor td.ipname{ font-family:"SF Mono",Consolas,monospace; font-size:12.5px; }
+  .twist{ display:inline-block; width:12px; color:var(--dim); }
+  td.count{ text-align:right; font-variant-numeric:tabular-nums; }
+  tr.subrow td{ background:#fafbfc; font-size:12.5px; padding:6px 20px 6px 44px; color:var(--dim); }
+  tr.subrow .stime{ color:var(--dim); margin-right:10px; font-variant-numeric:tabular-nums; }
+  .pill{ display:inline-block; font-size:10.5px; padding:1px 6px; border-radius:10px; margin-left:6px; vertical-align:middle; }
+  .pill.milestone{ background:var(--milestone); }
+  .pill.success{ background:var(--success); }
+  .pill.error{ background:var(--error); }
 
   .pager{
     display:flex;
@@ -134,26 +175,59 @@
 <header>
   <div>
     <h1>WU Traffic</h1>
-    <div class="sub">weddingsunlimited.com — visitor &amp; funnel activity</div>
+    <div class="sub">weddingsunlimited.com &mdash; visitor &amp; funnel activity</div>
   </div>
-  <div class="sub" id="total">—</div>
+  <div class="sub" id="total">&mdash;</div>
 </header>
 
-<div class="controls">
-  <input id="sessionFilter" type="text" placeholder="Filter by session id…" />
+<div class="tabs">
+  <button id="tabEvents" class="active">Events</button>
+  <button id="tabVisitors">By Visitor</button>
+</div>
+
+<div class="controls" id="eventsControls">
+  <input id="sessionFilter" type="text" placeholder="Filter by session id&hellip;" />
   <button id="applyFilter">Filter</button>
   <button id="clearFilter">Clear</button>
   <span class="spacer"></span>
   <label class="auto"><input type="checkbox" id="autoRefresh" checked /> Auto-refresh (15s)</label>
 </div>
 
-<table>
-  <thead>
-    <tr><th style="width:150px;">Created</th><th style="width:130px;">IP address</th><th>Event</th></tr>
-  </thead>
-  <tbody id="rows"></tbody>
-</table>
-<div class="empty" id="emptyMsg" style="display:none;">No events yet — once the tracker snippet is live on the site, activity will show up here.</div>
+<!-- Flat events view -->
+<div id="eventsView">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:130px;">Created</th>
+        <th style="width:115px;">IP address</th>
+        <th style="width:150px;">Location</th>
+        <th style="width:95px;">Device</th>
+        <th style="width:180px;">Referrer</th>
+        <th>Event</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+
+<!-- Grouped by visitor view -->
+<div id="visitorsView" style="display:none;">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:150px;">IP address</th>
+        <th style="width:180px;">Location</th>
+        <th style="width:100px;">Device</th>
+        <th style="width:70px;">Events</th>
+        <th style="width:140px;">First seen</th>
+        <th style="width:140px;">Last seen</th>
+      </tr>
+    </thead>
+    <tbody id="visitorRows"></tbody>
+  </table>
+</div>
+
+<div class="empty" id="emptyMsg" style="display:none;">No events yet &mdash; once the tracker snippet is live on the site, activity will show up here.</div>
 
 <div class="pager">
   <button id="prev">&larr; Prev</button>
@@ -165,6 +239,7 @@
   let page = 1;
   let sessionId = null;
   let timer = null;
+  let mode = 'events'; // 'events' | 'visitors'
 
   function rowClass(type){
     if (type === 'success') return 'type-success';
@@ -175,14 +250,44 @@
   }
 
   function fmtTime(iso){
-    // SQLite gives UTC "YYYY-MM-DD HH:MM:SS" -- render in the browser's local time.
+    if (!iso) return '';
     const d = new Date(iso.replace(' ', 'T') + 'Z');
     return d.toLocaleString(undefined, {
       month:'short', day:'numeric', hour:'numeric', minute:'2-digit'
     });
   }
 
-  async function load(){
+  function fmtLoc(city, region, country){
+    const parts = [city, region].filter(Boolean);
+    let s = parts.join(', ');
+    if (!s && country) s = country;
+    else if (s && country && country !== 'United States') s += ', ' + country;
+    return s || '&mdash;';
+  }
+
+  function fmtDevice(d){
+    if (d === 'Mobile') return '&#128241; Mobile';
+    if (d === 'Tablet') return '&#128241; Tablet';
+    if (d === 'Desktop') return '&#128187; Desktop';
+    if (d === 'Bot') return '&#129302; Bot';
+    return '&mdash;';
+  }
+
+  function fmtRef(ref){
+    if (!ref) return '&mdash;';
+    try {
+      const u = new URL(ref);
+      return esc(u.hostname.replace(/^www\./, '') + u.pathname).slice(0, 40);
+    } catch(e){
+      return esc(ref).slice(0, 40);
+    }
+  }
+
+  function esc(s){
+    return (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+
+  async function loadEvents(){
     const params = new URLSearchParams({ page });
     if (sessionId) params.set('session_id', sessionId);
     const res = await fetch('/api/events?' + params.toString());
@@ -198,8 +303,11 @@
       tr.className = rowClass(r.event_type);
       tr.innerHTML = `
         <td class="when">${fmtTime(r.created_at)}</td>
-        <td class="ip"><button title="Filter to this session" data-sid="${r.session_id || ''}">${r.ip_address || '—'}</button></td>
-        <td class="label">${r.label}</td>
+        <td class="ip"><button title="Filter to this session" data-sid="${esc(r.session_id || '')}">${esc(r.ip_address || '\u2014')}</button></td>
+        <td class="loc">${fmtLoc(r.geo_city, r.geo_region, r.geo_country)}</td>
+        <td class="device">${fmtDevice(r.device_type)}</td>
+        <td class="ref" title="${esc(r.referrer || '')}">${fmtRef(r.referrer)}</td>
+        <td class="label">${esc(r.label)}</td>
       `;
       tbody.appendChild(tr);
     }
@@ -215,21 +323,99 @@
         sessionId = btn.dataset.sid;
         document.getElementById('sessionFilter').value = sessionId;
         page = 1;
-        load();
+        loadEvents();
       });
     });
   }
 
+  async function loadVisitors(){
+    const params = new URLSearchParams({ page });
+    const res = await fetch('/api/visitors?' + params.toString());
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const tbody = document.getElementById('visitorRows');
+    tbody.innerHTML = '';
+    document.getElementById('emptyMsg').style.display = data.rows.length ? 'none' : 'block';
+
+    for (const v of data.rows){
+      const tr = document.createElement('tr');
+      tr.className = 'visitor';
+      tr.innerHTML = `
+        <td class="ipname"><span class="twist">&#9656;</span>${esc(v.ip_address || '\u2014')}</td>
+        <td class="loc">${fmtLoc(v.geo_city, v.geo_region, v.geo_country)}</td>
+        <td class="device">${fmtDevice(v.device_type)}</td>
+        <td class="count">${v.event_count}</td>
+        <td class="when">${fmtTime(v.first_seen)}</td>
+        <td class="when">${fmtTime(v.last_seen)}</td>
+      `;
+      tbody.appendChild(tr);
+
+      tr.addEventListener('click', async () => {
+        const next = tr.nextElementSibling;
+        const twist = tr.querySelector('.twist');
+        if (next && next.classList.contains('subrow')){
+          next.remove();
+          twist.innerHTML = '&#9656;';
+          return;
+        }
+        twist.innerHTML = '&#9662;';
+        const er = await fetch('/api/visitor-events?ip=' + encodeURIComponent(v.ip_address));
+        if (!er.ok) return;
+        const ed = await er.json();
+        const sub = document.createElement('tr');
+        sub.className = 'subrow';
+        const items = ed.rows.map(e => {
+          const cls = ['milestone','success','error'].includes(e.event_type) ? e.event_type : '';
+          const pill = cls ? `<span class="pill ${cls}">${cls}</span>` : '';
+          const ref = e.referrer ? ` &middot; <span title="${esc(e.referrer)}">from ${fmtRef(e.referrer)}</span>` : '';
+          return `<div><span class="stime">${fmtTime(e.created_at)}</span>${esc(e.label)}${pill}${ref}</div>`;
+        }).join('');
+        sub.innerHTML = `<td colspan="6">${items || 'No events.'}</td>`;
+        tr.after(sub);
+      });
+    }
+
+    document.getElementById('total').textContent = data.total + ' unique visitors';
+    document.getElementById('pageLabel').textContent = 'Page ' + data.page;
+    document.getElementById('prev').disabled = data.page <= 1;
+    document.getElementById('next').disabled = data.page * data.pageSize >= data.total;
+  }
+
+  function load(){
+    if (mode === 'events') return loadEvents();
+    return loadVisitors();
+  }
+
+  document.getElementById('tabEvents').addEventListener('click', () => {
+    mode = 'events'; page = 1;
+    document.getElementById('tabEvents').classList.add('active');
+    document.getElementById('tabVisitors').classList.remove('active');
+    document.getElementById('eventsView').style.display = '';
+    document.getElementById('visitorsView').style.display = 'none';
+    document.getElementById('eventsControls').style.display = '';
+    load();
+  });
+  document.getElementById('tabVisitors').addEventListener('click', () => {
+    mode = 'visitors'; page = 1; sessionId = null;
+    document.getElementById('tabVisitors').classList.add('active');
+    document.getElementById('tabEvents').classList.remove('active');
+    document.getElementById('visitorsView').style.display = '';
+    document.getElementById('eventsView').style.display = 'none';
+    document.getElementById('eventsControls').style.display = 'none';
+    load();
+  });
+
   document.getElementById('applyFilter').addEventListener('click', () => {
     sessionId = document.getElementById('sessionFilter').value.trim() || null;
     page = 1;
-    load();
+    loadEvents();
   });
   document.getElementById('clearFilter').addEventListener('click', () => {
     sessionId = null;
     document.getElementById('sessionFilter').value = '';
     page = 1;
-    load();
+    loadEvents();
   });
   document.getElementById('prev').addEventListener('click', () => { if (page > 1){ page--; load(); }});
   document.getElementById('next').addEventListener('click', () => { page++; load(); });
@@ -237,7 +423,7 @@
   function setupAutoRefresh(){
     if (timer) clearInterval(timer);
     if (document.getElementById('autoRefresh').checked){
-      timer = setInterval(() => { if (page === 1 && !sessionId) load(); }, 15000);
+      timer = setInterval(() => { if (mode === 'events' && page === 1 && !sessionId) loadEvents(); }, 15000);
     }
   }
   document.getElementById('autoRefresh').addEventListener('change', setupAutoRefresh);
