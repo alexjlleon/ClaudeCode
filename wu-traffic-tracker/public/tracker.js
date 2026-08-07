@@ -51,15 +51,86 @@
   send('Viewed page: ' + location.pathname, { type: 'pageview' });
 
   // --- Automatic: clicks on anything tagged data-wu-track="Label text" ---
+  // (checked first so manually-tagged elements don't ALSO get logged by
+  // the generic auto-capture below)
+  //
+  // --- Automatic (auto-capture): clicks on links, buttons, and images anywhere on the page ---
+  // Never captures form field values -- only the element that was clicked.
+  var CLICKABLE_SELECTOR = 'a, button, input[type="button"], input[type="submit"], img, [role="button"]';
+
+  function shortText(s, max) {
+    if (!s) return '';
+    s = s.replace(/\s+/g, ' ').trim();
+    return s.length > max ? s.slice(0, max - 1) + '\u2026' : s;
+  }
+
+  function cssPath(el) {
+    if (el.id) return '#' + el.id;
+    var cls = (el.className && typeof el.className === 'string')
+      ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.')
+      : '';
+    return el.tagName.toLowerCase() + (cls ? '.' + cls : '');
+  }
+
+  function describeClick(el) {
+    var tag = el.tagName.toLowerCase();
+    var meta = { tag: tag, selector: cssPath(el) };
+
+    if (tag === 'img') {
+      var alt = el.getAttribute('alt') || '';
+      meta.src = el.currentSrc || el.src || null;
+      return { label: 'Clicked image' + (alt ? ': ' + shortText(alt, 60) : ''), meta: meta };
+    }
+
+    var text = shortText(el.textContent, 80) ||
+      el.getAttribute('aria-label') ||
+      el.getAttribute('title') ||
+      el.getAttribute('value') || '';
+
+    if (tag === 'a' && el.href) meta.href = el.href;
+
+    return { label: 'Clicked' + (text ? ': ' + text : ' ' + tag), meta: meta };
+  }
+
   document.addEventListener(
     'click',
     function (e) {
-      var el = e.target.closest && e.target.closest('[data-wu-track]');
+      var tagged = e.target.closest && e.target.closest('[data-wu-track]');
+      if (tagged) {
+        var label = tagged.getAttribute('data-wu-track');
+        var type = tagged.getAttribute('data-wu-type') || 'click';
+        send(label, { type: type });
+        return;
+      }
+
+      var el = e.target.closest && e.target.closest(CLICKABLE_SELECTOR);
       if (!el) return;
-      var label = el.getAttribute('data-wu-track');
-      var type = el.getAttribute('data-wu-type') || 'click';
-      send(label, { type: type });
+
+      var info = describeClick(el);
+      send(info.label, { type: 'click', meta: info.meta });
     },
     true
   );
+
+  // --- Automatic: time spent on this page, sent once when the visitor leaves ---
+  var pageStart = Date.now();
+  var timingSent = false;
+
+  function sendTiming() {
+    if (timingSent) return;
+    var duration = Date.now() - pageStart;
+    if (duration < 1000) return; // skip near-instant bounces, not meaningful
+    timingSent = true;
+    send('Time on page', {
+      type: 'timing',
+      meta: { duration_ms: duration, page_url: location.href },
+    });
+  }
+
+  // pagehide fires reliably on navigation/tab close across desktop + mobile.
+  window.addEventListener('pagehide', sendTiming);
+  // Fallback: tab backgrounded (covers cases where pagehide doesn't fire).
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') sendTiming();
+  });
 })();
